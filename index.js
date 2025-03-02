@@ -5,7 +5,7 @@
  */
 
 // Richiedi i moduli
-const { addonBuilder } = require('stremio-addon-sdk');
+const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -445,9 +445,9 @@ app.get('*', (req, res) => {
     res.redirect('/install');
 });
 
-// Create and start server
-const serveHTTP = addon.getHTTPRouter();
-app.use('/', serveHTTP);
+// Utilizza il router fornito da serveHTTP invece di addon.getHTTPRouter()
+const router = serveHTTP(addon);
+app.use('/', router);
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
