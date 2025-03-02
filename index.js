@@ -1,8 +1,7 @@
 /**
- * Vavoo.to Italy - Stremio Addon (Fixed manifest)
+ * Vavoo.to Italy - Stremio Addon (Fix per gli stream)
  */
 
-const { addonBuilder } = require('stremio-addon-sdk');
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -172,6 +171,16 @@ function detectM3UType(content) {
     return "m3u";
 }
 
+// Risolve un URL relativo rispetto a un URL base
+function resolveUrl(base, relative) {
+    try {
+        return new URL(relative, base).href;
+    } catch (e) {
+        console.error('Error resolving URL:', e);
+        return relative;
+    }
+}
+
 // Mettere la rotta del manifest per prima così da avere la massima priorità
 app.get('/manifest.json', (req, res) => {
     console.log("Manifest richiesto");
@@ -179,6 +188,69 @@ app.get('/manifest.json', (req, res) => {
     res.header('Access-Control-Allow-Headers', '*');
     res.header('Content-Type', 'application/json');
     res.json(manifest);
+});
+
+// Ottieni direttamente il contenuto M3U8 dall'URL di Vavoo
+async function getM3U8Content(url, headers = {}) {
+    try {
+        const response = await axios.get(url, {
+            headers: { ...DEFAULT_HEADERS, ...headers },
+            maxRedirects: 5,
+            timeout: 10000
+        });
+        
+        return {
+            content: response.data,
+            finalUrl: response.request.res.responseUrl || url
+        };
+    } catch (error) {
+        console.error(`Error fetching M3U8 content from ${url}:`, error.message);
+        throw error;
+    }
+}
+
+// Proxied M3U8 content for Stremio
+app.get('/proxy/m3u8/:channelId', async (req, res) => {
+    const { channelId } = req.params;
+    
+    try {
+        // Costruisci l'URL dello stream
+        const streamUrl = VAVOO_STREAM_BASE_URL.replace("{id}", channelId);
+        console.log(`Proxying M3U8 for channel ${channelId} from ${streamUrl}`);
+        
+        // Ottieni il contenuto M3U8
+        const { content, finalUrl } = await getM3U8Content(streamUrl);
+        
+        // Parse dell'URL per ottenere l'URL base per risolvere i path relativi
+        const parsedUrl = new URL(finalUrl);
+        const basePath = parsedUrl.pathname.split('/').slice(0, -1).join('/');
+        const baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}${basePath}/`;
+        
+        // Modifica il contenuto M3U8 per utilizzare il proxy per i segmenti TS
+        const modifiedLines = content.split('\n').map(line => {
+            line = line.trim();
+            if (line && !line.startsWith('#')) {
+                // Risolvi URL relativo
+                const segmentUrl = resolveUrl(baseUrl, line);
+                // Crea URL proxy
+                return `/proxy/ts?url=${encodeURIComponent(segmentUrl)}`;
+            }
+            return line;
+        });
+        
+        const modifiedM3u8Content = modifiedLines.join('\n');
+        
+        // Imposta gli header corretti
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'no-cache');
+        
+        // Invia il contenuto modificato
+        res.send(modifiedM3u8Content);
+    } catch (error) {
+        console.error(`Error proxying M3U8 for channel ${channelId}:`, error.message);
+        res.status(500).send(`Error proxying M3U8: ${error.message}`);
+    }
 });
 
 // M3U proxy endpoint
@@ -229,7 +301,7 @@ app.get('/proxy/m3u', async (req, res) => {
             line = line.trim();
             if (line && !line.startsWith('#')) {
                 // Resolve relative URL
-                const segmentUrl = new URL(line, baseUrl).href;
+                const segmentUrl = resolveUrl(baseUrl, line);
                 // Create proxied URL
                 return `/proxy/ts?url=${encodeURIComponent(segmentUrl)}&${headerParams}`;
             }
@@ -254,7 +326,7 @@ app.get('/proxy/ts', async (req, res) => {
     }
     
     // Extract custom headers from query params
-    const headers = {};
+    const headers = { ...DEFAULT_HEADERS };
     for (const [key, value] of Object.entries(req.query)) {
         if (key.toLowerCase().startsWith("header_")) {
             const headerName = decodeURIComponent(key.substring(7)).replace("_", "-");
@@ -271,6 +343,7 @@ app.get('/proxy/ts', async (req, res) => {
         });
         
         res.set('Content-Type', 'video/mp2t');
+        res.set('Access-Control-Allow-Origin', '*');
         return response.data.pipe(res);
         
     } catch (error) {
@@ -433,8 +506,18 @@ app.get('/stream/:type/:id.json', async (req, res) => {
             return res.json({ streams: [] });
         }
         
-        // Costruisci l'URL dello stream
-        const streamUrl = VAVOO_STREAM_BASE_URL.replace("{id}", req.params.id);
+        const baseUrl = (() => {
+            const isHttps = req.headers['x-forwarded-proto'] === 'https';
+            const host = req.headers.host;
+            if (isHttps || !host.startsWith('localhost')) {
+                return `https://${host}`;
+            } else {
+                return `http://${host}`;
+            }
+        })();
+        
+        // Il nuovo URL dello stream è un URL al nostro proxy M3U8
+        const streamUrl = `${baseUrl}/proxy/m3u8/${req.params.id}`;
         
         const channels = await loadItalianChannels();
         const channel = channels.find(ch => ch && String(ch.id) === req.params.id);
@@ -445,6 +528,7 @@ app.get('/stream/:type/:id.json', async (req, res) => {
         res.json({
             streams: [
                 {
+                    // Utilizza l'URL del nostro proxy così possiamo manipolare lo stream
                     url: streamUrl,
                     title: `${channelName} - Vavoo.to Stream`,
                     name: "Vavoo.to"
