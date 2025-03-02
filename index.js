@@ -445,11 +445,146 @@ app.get('*', (req, res) => {
     res.redirect('/install');
 });
 
-// Utilizza il router fornito da serveHTTP invece di addon.getHTTPRouter()
-const router = serveHTTP(addon);
-app.use('/', router);
-
+// Avvia direttamente il server dell'addon
 const PORT = process.env.PORT || 10000;
+
+// Esporta il manifest per poterlo utilizzare nelle rotte '/manifest.json'
+app.get('/manifest.json', (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.send(addon.getInterface());
+});
+
+// Implementa le rotte per l'addon
+app.get('/:resource/:type/:id.json', (req, res, next) => {
+    const { resource, type, id } = req.params;
+    
+    console.log(`API request: /${resource}/${type}/${id}.json`);
+    
+    if (resource === 'catalog') {
+        addon.defineCatalogHandler(async ({ type, id, extra }) => {
+            try {
+                let channels = await loadItalianChannels();
+                
+                // Parse extra
+                const search = req.query.search || '';
+                const skip = parseInt(req.query.skip || '0');
+                
+                // Filter by search if specified
+                if (search) {
+                    const searchLower = search.toLowerCase();
+                    channels = channels.filter(ch => ch && ch.name && ch.name.toLowerCase().includes(searchLower));
+                }
+                
+                // Apply pagination
+                channels = channels.slice(skip, skip + 100);
+                
+                const metas = channels.map(channel => {
+                    const genre = getChannelGenre(channel.name);
+                    const logoUrl = findLogoForChannel(channel.name);
+                    
+                    return {
+                        id: String(channel.id),
+                        type: "tv",
+                        name: channel.name,
+                        genres: [genre],
+                        poster: logoUrl,
+                        posterShape: "square",
+                        background: `https://via.placeholder.com/1280x720/000080/FFFFFF?text=${encodeURIComponent(channel.name)}`,
+                        logo: logoUrl
+                    };
+                });
+                
+                console.log(`Returning ${metas.length} channels`);
+                return { metas };
+            } catch (error) {
+                console.error('Error in catalog handler:', error);
+                return { metas: [] };
+            }
+        });
+        
+        addon.get(`/${resource}/${type}/${id}.json`).then(resp => {
+            res.setHeader('Content-Type', 'application/json');
+            res.send(resp);
+        }).catch(err => {
+            console.error('Error serving catalog:', err);
+            res.status(500).json({ error: 'Error serving catalog' });
+        });
+    } else if (resource === 'meta') {
+        addon.defineMetaHandler(async ({ type, id }) => {
+            try {
+                const channels = await loadItalianChannels();
+                const channel = channels.find(ch => ch && String(ch.id) === id);
+                
+                if (!channel) {
+                    return { meta: null };
+                }
+                
+                const genre = getChannelGenre(channel.name);
+                const logoUrl = findLogoForChannel(channel.name);
+                
+                const meta = {
+                    id: String(channel.id),
+                    type: "tv",
+                    name: channel.name,
+                    genres: [genre],
+                    poster: logoUrl,
+                    posterShape: "square",
+                    background: `https://via.placeholder.com/1280x720/000080/FFFFFF?text=${encodeURIComponent(channel.name)}`,
+                    logo: logoUrl
+                };
+                
+                return { meta };
+            } catch (error) {
+                console.error('Error in meta handler:', error);
+                return { meta: null };
+            }
+        });
+        
+        addon.get(`/${resource}/${type}/${id}.json`).then(resp => {
+            res.setHeader('Content-Type', 'application/json');
+            res.send(resp);
+        }).catch(err => {
+            console.error('Error serving meta:', err);
+            res.status(500).json({ error: 'Error serving meta' });
+        });
+    } else if (resource === 'stream') {
+        addon.defineStreamHandler(async ({ type, id }) => {
+            try {
+                // Build stream URL
+                const streamUrl = VAVOO_STREAM_BASE_URL.replace("{id}", id);
+                
+                const channels = await loadItalianChannels();
+                const channel = channels.find(ch => ch && String(ch.id) === id);
+                const channelName = channel ? channel.name : "Unknown";
+                
+                // Return stream object for Stremio
+                return {
+                    streams: [
+                        {
+                            url: streamUrl,
+                            title: `${channelName} - Vavoo.to Stream`,
+                            name: "Vavoo.to"
+                        }
+                    ]
+                };
+            } catch (error) {
+                console.error('Error in stream handler:', error);
+                return { streams: [] };
+            }
+        });
+        
+        addon.get(`/${resource}/${type}/${id}.json`).then(resp => {
+            res.setHeader('Content-Type', 'application/json');
+            res.send(resp);
+        }).catch(err => {
+            console.error('Error serving stream:', err);
+            res.status(500).json({ error: 'Error serving stream' });
+        });
+    } else {
+        next();
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`Vavoo.to Italy addon running on port ${PORT}`);
 });
