@@ -1,3 +1,10 @@
+/**
+ * Vavoo.to Italy - Stremio Addon
+ * 
+ * Questo addon permette di visualizzare i canali italiani di Vavoo.to su Stremio
+ */
+
+// Richiedi i moduli
 const { addonBuilder } = require('stremio-addon-sdk');
 const express = require('express');
 const cors = require('cors');
@@ -25,22 +32,30 @@ let channelsCache = [];
 let cacheTimestamp = 0;
 const CACHE_DURATION = 600; // 10 minutes in seconds
 
-// Load channel logos
+// Prova a caricare i loghi, o crea un oggetto vuoto se il file non esiste
 function loadLogos() {
     try {
         const logosFilePath = path.join(__dirname, 'canali_con_loghi_finale.json');
-        const logosData = JSON.parse(fs.readFileSync(logosFilePath, 'utf-8'));
         
-        // Create a dictionary without normalizing names
-        const logosDict = {};
-        for (const channel of logosData) {
-            if (channel.name) {
-                // Use the exact channel name as key
-                logosDict[channel.name] = channel.logo || "";
+        // Verifica se il file esiste
+        if (fs.existsSync(logosFilePath)) {
+            const logosData = JSON.parse(fs.readFileSync(logosFilePath, 'utf-8'));
+            
+            // Create a dictionary without normalizing names
+            const logosDict = {};
+            for (const channel of logosData) {
+                if (channel.name) {
+                    // Use the exact channel name as key
+                    logosDict[channel.name] = channel.logo || "";
+                }
             }
+            
+            console.log(`Caricati ${Object.keys(logosDict).length} loghi dei canali`);
+            return logosDict;
+        } else {
+            console.warn("File dei loghi non trovato:", logosFilePath);
+            return {};
         }
-        
-        return logosDict;
     } catch (error) {
         console.error(`Error loading logos: ${error.message}`);
         return {};
@@ -53,12 +68,12 @@ const channelLogos = loadLogos();
 // Find logo for a channel with direct comparison
 function findLogoForChannel(channelName) {
     // Check for exact match without normalization
-    if (channelName in channelLogos) {
+    if (channelName && channelName in channelLogos) {
         return channelLogos[channelName];
     }
     
     // If no logo is found, return a placeholder URL
-    return `https://placehold.co/300x300?text=${encodeURIComponent(channelName)}&.jpg`;
+    return `https://placehold.co/300x300?text=${encodeURIComponent(channelName || 'TV')}&.jpg`;
 }
 
 // Function to load and filter Italian channels from vavoo.to
@@ -71,9 +86,20 @@ async function loadItalianChannels() {
     }
     
     try {
-        const response = await axios.get(VAVOO_API_URL, { headers: DEFAULT_HEADERS });
+        const response = await axios.get(VAVOO_API_URL, { 
+            headers: DEFAULT_HEADERS,
+            timeout: 10000  // 10 secondi timeout
+        });
+        
+        if (!response.data || !Array.isArray(response.data)) {
+            console.error("Risposta API non valida:", response.data);
+            return channelsCache.length > 0 ? channelsCache : [];
+        }
+        
         const allChannels = response.data;
-        const italianChannels = allChannels.filter(ch => ch.country === "Italy");
+        const italianChannels = allChannels.filter(ch => ch && ch.country === "Italy");
+        
+        console.log(`Caricati ${italianChannels.length} canali italiani`);
         
         // Update cache
         channelsCache = italianChannels;
@@ -88,6 +114,8 @@ async function loadItalianChannels() {
 
 // Determine channel genre based on name
 function getChannelGenre(channelName) {
+    if (!channelName) return "GENERAL";
+    
     const lowerName = channelName.toLowerCase();
     
     const genres = {
@@ -137,20 +165,22 @@ const addon = new addonBuilder({
 
 // Define catalog handler
 addon.defineCatalogHandler(async ({ type, id, extra }) => {
+    console.log(`Catalog request received: ${type}/${id}`);
+    
     // Check if type and id match supported ones
     if (type !== "tv" || id !== "vavoo_italy") {
         return { metas: [] };
     }
     
-    const search = extra.search || "";
-    const skip = parseInt(extra.skip || 0);
+    const search = extra && extra.search ? extra.search : "";
+    const skip = extra && extra.skip ? parseInt(extra.skip) : 0;
     
     let channels = await loadItalianChannels();
     
     // Filter by search if specified
     if (search) {
         const searchLower = search.toLowerCase();
-        channels = channels.filter(ch => ch.name.toLowerCase().includes(searchLower));
+        channels = channels.filter(ch => ch && ch.name && ch.name.toLowerCase().includes(searchLower));
     }
     
     // Apply pagination
@@ -172,18 +202,21 @@ addon.defineCatalogHandler(async ({ type, id, extra }) => {
         };
     });
     
+    console.log(`Returning ${metas.length} channels`);
     return { metas };
 });
 
 // Define meta handler
 addon.defineMetaHandler(async ({ type, id }) => {
+    console.log(`Meta request received: ${type}/${id}`);
+    
     // Check if type is supported
     if (type !== "tv") {
         return { meta: null };
     }
     
     const channels = await loadItalianChannels();
-    const channel = channels.find(ch => String(ch.id) === id);
+    const channel = channels.find(ch => ch && String(ch.id) === id);
     
     if (!channel) {
         return { meta: null };
@@ -208,28 +241,35 @@ addon.defineMetaHandler(async ({ type, id }) => {
 
 // Define stream handler
 addon.defineStreamHandler(async ({ type, id }) => {
+    console.log(`Stream request received: ${type}/${id}`);
+    
     // Check if type is supported
     if (type !== "tv") {
         return { streams: [] };
     }
     
-    // Build stream URL
-    const streamUrl = VAVOO_STREAM_BASE_URL.replace("{id}", id);
-    
-    const channels = await loadItalianChannels();
-    const channel = channels.find(ch => String(ch.id) === id);
-    const channelName = channel ? channel.name : "Unknown";
-    
-    // Return stream object for Stremio
-    return {
-        streams: [
-            {
-                url: streamUrl,
-                title: `${channelName} - Vavoo.to Stream`,
-                name: "Vavoo.to"
-            }
-        ]
-    };
+    try {
+        // Build stream URL
+        const streamUrl = VAVOO_STREAM_BASE_URL.replace("{id}", id);
+        
+        const channels = await loadItalianChannels();
+        const channel = channels.find(ch => ch && String(ch.id) === id);
+        const channelName = channel ? channel.name : "Unknown";
+        
+        // Return stream object for Stremio
+        return {
+            streams: [
+                {
+                    url: streamUrl,
+                    title: `${channelName} - Vavoo.to Stream`,
+                    name: "Vavoo.to"
+                }
+            ]
+        };
+    } catch (error) {
+        console.error(`Error handling stream request: ${error.message}`);
+        return { streams: [] };
+    }
 });
 
 // Create express app for additional routes
@@ -238,7 +278,7 @@ app.use(cors());
 
 // Detect if the content is M3U or M3U8
 function detectM3UType(content) {
-    if (content.includes("#EXTM3U") && content.includes("#EXTINF")) {
+    if (content && typeof content === 'string' && content.includes("#EXTM3U") && content.includes("#EXTINF")) {
         return "m3u8";
     }
     return "m3u";
@@ -261,7 +301,12 @@ app.get('/proxy/m3u', async (req, res) => {
     }
     
     try {
-        const response = await axios.get(m3uUrl, { headers, maxRedirects: 5 });
+        const response = await axios.get(m3uUrl, { 
+            headers, 
+            maxRedirects: 5,
+            timeout: 10000  // 10 secondi timeout
+        });
+        
         const finalUrl = response.request.res.responseUrl || m3uUrl;
         const m3uContent = response.data;
         
@@ -299,6 +344,7 @@ app.get('/proxy/m3u', async (req, res) => {
         return res.send(modifiedM3u8Content);
         
     } catch (error) {
+        console.error(`Error downloading M3U/M3U8 file: ${error.message}`);
         return res.status(500).send(`Error downloading M3U/M3U8 file: ${error.message}`);
     }
 });
@@ -323,13 +369,15 @@ app.get('/proxy/ts', async (req, res) => {
         const response = await axios.get(tsUrl, { 
             headers, 
             responseType: 'stream',
-            maxRedirects: 5
+            maxRedirects: 5,
+            timeout: 15000  // 15 secondi timeout
         });
         
         res.set('Content-Type', 'video/mp2t');
         return response.data.pipe(res);
         
     } catch (error) {
+        console.error(`Error downloading TS segment: ${error.message}`);
         return res.status(500).send(`Error downloading TS segment: ${error.message}`);
     }
 });
