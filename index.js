@@ -1,6 +1,5 @@
 /**
- * Vavoo.to Italy - Stremio Addon
- * Utilizza correttamente l'SDK di Stremio
+ * Vavoo.to Italy - Stremio Addon (Fixed manifest)
  */
 
 const { addonBuilder } = require('stremio-addon-sdk');
@@ -136,8 +135,12 @@ function getChannelGenre(channelName) {
     return "GENERAL";
 }
 
-// Create a new addon builder
-const builder = new addonBuilder({
+// Create express app
+const app = express();
+app.use(cors());
+
+// Esporta il manifest direttamente come oggetto JSON
+const manifest = {
     id: ADDON_ID,
     version: ADDON_VERSION,
     name: ADDON_NAME,
@@ -159,120 +162,7 @@ const builder = new addonBuilder({
     logo: "https://vavoo.to/favicon.ico",
     background: "https://via.placeholder.com/1280x720/000080/FFFFFF?text=Vavoo.to%20Italia",
     contactEmail: "example@example.com" // Replace with real email if needed
-});
-
-// Define catalog handler
-builder.defineCatalogHandler(async ({ type, id, extra }) => {
-    console.log(`Catalog request received: ${type}/${id}`);
-    
-    // Check if type and id match supported ones
-    if (type !== "tv" || id !== "vavoo_italy") {
-        return { metas: [] };
-    }
-    
-    const search = extra && extra.search ? extra.search : "";
-    const skip = extra && extra.skip ? parseInt(extra.skip) : 0;
-    
-    let channels = await loadItalianChannels();
-    
-    // Filter by search if specified
-    if (search) {
-        const searchLower = search.toLowerCase();
-        channels = channels.filter(ch => ch && ch.name && ch.name.toLowerCase().includes(searchLower));
-    }
-    
-    // Apply pagination
-    channels = channels.slice(skip, skip + 100);
-    
-    const metas = channels.map(channel => {
-        const genre = getChannelGenre(channel.name);
-        const logoUrl = findLogoForChannel(channel.name);
-        
-        return {
-            id: String(channel.id),
-            type: "tv",
-            name: channel.name,
-            genres: [genre],
-            poster: logoUrl,
-            posterShape: "square",
-            background: `https://via.placeholder.com/1280x720/000080/FFFFFF?text=${encodeURIComponent(channel.name)}`,
-            logo: logoUrl
-        };
-    });
-    
-    console.log(`Returning ${metas.length} channels`);
-    return { metas };
-});
-
-// Define meta handler
-builder.defineMetaHandler(async ({ type, id }) => {
-    console.log(`Meta request received: ${type}/${id}`);
-    
-    // Check if type is supported
-    if (type !== "tv") {
-        return { meta: null };
-    }
-    
-    const channels = await loadItalianChannels();
-    const channel = channels.find(ch => ch && String(ch.id) === id);
-    
-    if (!channel) {
-        return { meta: null };
-    }
-    
-    const genre = getChannelGenre(channel.name);
-    const logoUrl = findLogoForChannel(channel.name);
-    
-    const meta = {
-        id: String(channel.id),
-        type: "tv",
-        name: channel.name,
-        genres: [genre],
-        poster: logoUrl,
-        posterShape: "square",
-        background: `https://via.placeholder.com/1280x720/000080/FFFFFF?text=${encodeURIComponent(channel.name)}`,
-        logo: logoUrl
-    };
-    
-    return { meta };
-});
-
-// Define stream handler
-builder.defineStreamHandler(async ({ type, id }) => {
-    console.log(`Stream request received: ${type}/${id}`);
-    
-    // Check if type is supported
-    if (type !== "tv") {
-        return { streams: [] };
-    }
-    
-    try {
-        // Build stream URL
-        const streamUrl = VAVOO_STREAM_BASE_URL.replace("{id}", id);
-        
-        const channels = await loadItalianChannels();
-        const channel = channels.find(ch => ch && String(ch.id) === id);
-        const channelName = channel ? channel.name : "Unknown";
-        
-        // Return stream object for Stremio
-        return {
-            streams: [
-                {
-                    url: streamUrl,
-                    title: `${channelName} - Vavoo.to Stream`,
-                    name: "Vavoo.to"
-                }
-            ]
-        };
-    } catch (error) {
-        console.error(`Error handling stream request: ${error.message}`);
-        return { streams: [] };
-    }
-});
-
-// Create express app for additional routes
-const app = express();
-app.use(cors());
+};
 
 // Detect if the content is M3U or M3U8
 function detectM3UType(content) {
@@ -281,6 +171,15 @@ function detectM3UType(content) {
     }
     return "m3u";
 }
+
+// Mettere la rotta del manifest per prima così da avere la massima priorità
+app.get('/manifest.json', (req, res) => {
+    console.log("Manifest richiesto");
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', '*');
+    res.header('Content-Type', 'application/json');
+    res.json(manifest);
+});
 
 // M3U proxy endpoint
 app.get('/proxy/m3u', async (req, res) => {
@@ -433,75 +332,145 @@ app.get('/install', (req, res) => {
     res.send(html);
 });
 
+// API endpoint per il catalogo
+app.get('/catalog/:type/:id.json', async (req, res) => {
+    console.log(`Catalog request: ${req.params.type}/${req.params.id}`, req.query);
+    
+    try {
+        // Verifica che il tipo e l'id siano supportati
+        if (req.params.type !== "tv" || req.params.id !== "vavoo_italy") {
+            return res.json({ metas: [] });
+        }
+        
+        const search = req.query.search || '';
+        const skip = parseInt(req.query.skip || '0');
+        
+        let channels = await loadItalianChannels();
+        
+        // Filtra per ricerca se specificata
+        if (search) {
+            const searchLower = search.toLowerCase();
+            channels = channels.filter(ch => ch && ch.name && ch.name.toLowerCase().includes(searchLower));
+        }
+        
+        // Applica paginazione
+        channels = channels.slice(skip, skip + 100);
+        
+        const metas = channels.map(channel => {
+            const genre = getChannelGenre(channel.name);
+            const logoUrl = findLogoForChannel(channel.name);
+            
+            return {
+                id: String(channel.id),
+                type: "tv",
+                name: channel.name,
+                genres: [genre],
+                poster: logoUrl,
+                posterShape: "square",
+                background: `https://via.placeholder.com/1280x720/000080/FFFFFF?text=${encodeURIComponent(channel.name)}`,
+                logo: logoUrl
+            };
+        });
+        
+        console.log(`Returning ${metas.length} channels`);
+        
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Content-Type', 'application/json');
+        res.json({ metas });
+    } catch (error) {
+        console.error('Error in catalog handler:', error);
+        res.status(500).json({ error: 'Internal server error', metas: [] });
+    }
+});
+
+// API endpoint per i metadati
+app.get('/meta/:type/:id.json', async (req, res) => {
+    console.log(`Meta request: ${req.params.type}/${req.params.id}`);
+    
+    try {
+        // Verifica che il tipo sia supportato
+        if (req.params.type !== "tv") {
+            return res.json({ meta: null });
+        }
+        
+        const channels = await loadItalianChannels();
+        const channel = channels.find(ch => ch && String(ch.id) === req.params.id);
+        
+        if (!channel) {
+            return res.json({ meta: null });
+        }
+        
+        const genre = getChannelGenre(channel.name);
+        const logoUrl = findLogoForChannel(channel.name);
+        
+        const meta = {
+            id: String(channel.id),
+            type: "tv",
+            name: channel.name,
+            genres: [genre],
+            poster: logoUrl,
+            posterShape: "square",
+            background: `https://via.placeholder.com/1280x720/000080/FFFFFF?text=${encodeURIComponent(channel.name)}`,
+            logo: logoUrl
+        };
+        
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Content-Type', 'application/json');
+        res.json({ meta });
+    } catch (error) {
+        console.error('Error in meta handler:', error);
+        res.status(500).json({ error: 'Internal server error', meta: null });
+    }
+});
+
+// API endpoint per gli stream
+app.get('/stream/:type/:id.json', async (req, res) => {
+    console.log(`Stream request: ${req.params.type}/${req.params.id}`);
+    
+    try {
+        // Verifica che il tipo sia supportato
+        if (req.params.type !== "tv") {
+            return res.json({ streams: [] });
+        }
+        
+        // Costruisci l'URL dello stream
+        const streamUrl = VAVOO_STREAM_BASE_URL.replace("{id}", req.params.id);
+        
+        const channels = await loadItalianChannels();
+        const channel = channels.find(ch => ch && String(ch.id) === req.params.id);
+        const channelName = channel ? channel.name : "Unknown";
+        
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Content-Type', 'application/json');
+        res.json({
+            streams: [
+                {
+                    url: streamUrl,
+                    title: `${channelName} - Vavoo.to Stream`,
+                    name: "Vavoo.to"
+                }
+            ]
+        });
+    } catch (error) {
+        console.error('Error in stream handler:', error);
+        res.status(500).json({ error: 'Internal server error', streams: [] });
+    }
+});
+
 // Root redirects to install page
 app.get('/', (req, res) => {
     res.redirect('/install');
 });
 
-// Catch-all route
+// Catch-all route - assicurati che sia ULTIMA!
 app.get('*', (req, res) => {
+    // Log per vedere quali richieste arrivano qui
+    console.log("Route non gestita:", req.path);
     res.redirect('/install');
 });
 
-// Crea manualmente il server e le rotte invece di utilizzare builder.runHTTPServer()
-// che potrebbe non funzionare correttamente in alcune versioni di stremio-addon-sdk
+// Start server
 const PORT = process.env.PORT || 10000;
-
-// Esporta il manifest per poterlo utilizzare nelle rotte '/manifest.json'
-app.get('/manifest.json', (req, res) => {
-    console.log("Manifest richiesto");
-    
-    // Configura gli header CORS corretti e cache-control
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'max-age=3600');
-    
-    // Ottieni il manifest e invialo come risposta JSON
-    res.json(builder.getManifest());
-});
-
-// Implementa le rotte per le API Stremio
-app.get('/:resource/:type/:id.json', async (req, res) => {
-    const { resource, type, id } = req.params;
-    
-    console.log(`API request: /${resource}/${type}/${id}.json`, req.query);
-    
-    try {
-        let result;
-        
-        if (resource === 'catalog') {
-            // Prepara i parametri extra dal query string
-            const extra = {
-                search: req.query.search,
-                skip: req.query.skip ? parseInt(req.query.skip) : 0
-            };
-            
-            // Usa il catalog handler dell'addon
-            result = await builder.catalogHandler({ type, id, extra });
-        } else if (resource === 'meta') {
-            // Usa il meta handler dell'addon
-            result = await builder.metaHandler({ type, id });
-        } else if (resource === 'stream') {
-            // Usa lo stream handler dell'addon
-            result = await builder.streamHandler({ type, id });
-        } else {
-            // Risorsa non supportata
-            return res.status(404).json({ error: 'Unsupported resource type' });
-        }
-        
-        // Configura gli header CORS
-        res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cache-Control', 'max-age=3600');
-        
-        // Invia la risposta JSON
-        res.json(result);
-    } catch (error) {
-        console.error(`Error in API handler (/${resource}/${type}/${id}.json):`, error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
 app.listen(PORT, () => {
     console.log(`Vavoo.to Italy addon running on port ${PORT}`);
 });
